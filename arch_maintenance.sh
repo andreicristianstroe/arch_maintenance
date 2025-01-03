@@ -1,12 +1,15 @@
 #!/bin/zsh
 
+version="1.0.1"
+echo "Arch Maintenance Script v$version"
+
 # Exit on error
 set -e
 
-# Define colors for better readability
-green='\e[32m'
-red='\e[31m'
-reset='\e[0m'
+# Defining colors
+green=$(tput setaf 2)
+red=$(tput setaf 1)
+reset=$(tput sgr0)
 
 # Function to print success messages
 function success() {
@@ -16,7 +19,6 @@ function success() {
 # Function to print error messages
 function error() {
     echo -e "${red}[ERROR]${reset} $1" >&2
-    exit 1
 }
 
 # Update the system
@@ -29,8 +31,13 @@ function update_system() {
 # Remove orphaned packages
 function remove_orphans() {
     echo "Removing orphaned packages..."
-    sudo pacman -Rns $(pacman -Qdtq) --noconfirm || echo "No orphans to remove."
-    success "Orphaned packages removed."
+    orphans=$(pacman -Qdtq)
+    if [[ -z "$orphans" ]]; then
+        echo "No orphaned packages to remove."
+    else
+        sudo pacman -Rns $orphans --noconfirm || error "Failed to remove orphaned packages."
+        success "Orphaned packages removed."
+    fi
 }
 
 # Clear package cache (pacman -Scc)
@@ -82,6 +89,23 @@ function update_mirrors() {
     success "Arch Mirrors updated successfully."
 }
 
+# Perform all tasks
+function perform_all_tasks() {
+    echo "Performing all maintenance tasks..."
+    (
+        update_mirrors &&
+        update_system &&
+        remove_orphans &&
+        clear_cache &&
+        clear_paccache &&
+        update_flatpak &&
+        unused_flatpak &&
+        repair_flatpak &&
+        clear_journal
+    ) || error "Failed to perform all tasks."
+    success "All tasks completed successfully."
+}
+
 # Main menu
 function main() {
     while true; do
@@ -129,15 +153,7 @@ function main() {
             update_mirrors
             ;;
         10)
-            update_system
-            remove_orphans
-            clear_cache
-            clear_paccache
-            update_flatpak
-            unused_flatpak
-            repair_flatpak
-            clear_journal
-            update_mirrors
+            perform_all_tasks
             ;;
         0)
             echo "Exiting..."
@@ -151,5 +167,4 @@ function main() {
     done
 }
 
-# Run the main function
 main
