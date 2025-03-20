@@ -1,6 +1,6 @@
 #!/bin/zsh
 
-version="1.0.1"
+version="1.0.2"
 echo "Arch Maintenance Script v$version"
 
 # Exit on error
@@ -47,28 +47,28 @@ function clear_cache() {
     success "Package cache cleared."
 }
 
-# Clear package cache (paccache -ruk0)
+# Clear package cache (paccache -ruk0) (*pacman-contrib required*)
 function clear_paccache() {
     echo "Clearing package cache..."
     sudo paccache -ruk0 || error "Failed to clear package cache."
     success "Package cache cleared."
 }
 
-# Update Flatpak apps
+# Update Flatpak apps (*flatpak required*)
 function update_flatpak() {
     echo "Updating Flatpak apps..."
     flatpak update -y || error "Failed to update Flatpak apps."
     success "Flatpak apps updated successfully."
 }
 
-# Remove unused Flatpak runtimes and extensions
+# Remove unused Flatpak runtimes and extensions (*flatpak required*)
 function unused_flatpak() {
     echo "Removing unused Flatpak runtimes and extensions..."
     flatpak uninstall --unused || error "Failed to remove unused Flatpak runtimes and extensions."
     success "Unused Flatpak runtimes and extensions removed successfully."
 }
 
-# Repair Flatpak
+# Repair Flatpak (*flatpak required*)
 function repair_flatpak() {
     echo "Repairing local Flatpak installation..."
     flatpak repair || error "Failed to repair local Flatpak installation"
@@ -82,14 +82,14 @@ function clear_journal() {
     success "Journal cleared."
 }
 
-# Update Arch Mirrors
+# Update Arch Mirrors (*reflector required*)
 function update_mirrors() {
     echo "Updating Mirrors using reflector"
     sudo reflector --protocol https --verbose --latest 25 --sort rate --save /etc/pacman.d/mirrorlist || error "Failed to update Arch Mirrors."
     success "Arch Mirrors updated successfully."
 }
 
-# Perform all tasks
+# Perform all tasks (*flatpak pacman-contrib reflector requried*)
 function perform_all_tasks() {
     echo "Performing all maintenance tasks..."
     (
@@ -113,13 +113,13 @@ function main() {
         echo "1) Update system packages"
         echo "2) Remove orphaned packages"
         echo "3) Clear package cache (pacman -Scc)"
-        echo "4) Clear package cache (paccache -ruk0)"
-        echo "5) Update Flatpak apps"
-        echo "6) Remove unused Flatpak runtimes and extensions"
-        echo "7) Repair Flatpak"
+        echo "4) Clear package cache (paccache -ruk0) (*pacman-contrib required*)"
+        echo "5) Update Flatpak apps (*flatpak required*)"
+        echo "6) Remove unused Flatpak runtimes and extensions (*flatpak required*)"
+        echo "7) Repair Flatpak (*flatpak required*)"
         echo "8) Clear journal"
-        echo "9) Update Arch Mirrors"
-        echo "10) Perform all tasks"
+        echo "9) Update Arch Mirrors (*reflector required*)"
+        echo "10) Perform all tasks (*flatpak pacman-contrib reflector requried*)"
         echo "0) Exit"
 
         echo -n "Enter your choice: "
