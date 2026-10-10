@@ -1,0 +1,236 @@
+#!/usr/bin/env zsh
+
+setopt extended_glob
+setopt glob_dots
+
+function log_info()    { print -r -- "[INFO]    $1" }
+function log_success() { print -r -- "[DONE]    $1" }
+function log_warn()    { print -r -- "[WARN]    $1" >&2 }
+function log_error()   { print -r -- "[ERROR]   $1" >&2 }
+
+function check_deps() {
+    local miss=()
+    local cmd
+    for cmd in pacman paccache reflector flatpak fwupdmgr journalctl yay; do
+        command -v "$cmd" &>/dev/null || miss+=("$cmd")
+    done
+    if (( ${#miss[@]} > 0 )); then
+        log_warn "Missing optional commands: ${miss[*]}. Dependent tasks will skip."
+    fi
+}
+
+function check_system_health() {
+    echo "--- System Health Diagnosis ---"
+
+    local sys_failed_raw
+    sys_failed_raw=$(systemctl list-units --state=failed --plain --no-legend 2>/dev/null)
+
+    local user_failed_raw
+    user_failed_raw=$(systemctl --user list-units --state=failed --plain --no-legend 2>/dev/null)
+
+    if [[ -n "$sys_failed_raw" || -n "$user_failed_raw" ]]; then
+        log_error "Failed systemd services detected:"
+        [[ -n "$sys_failed_raw" ]] && printf '        [System] %s\n' ${(f)sys_failed_raw}
+        [[ -n "$user_failed_raw" ]] && printf '        [User]   %s\n' ${(f)user_failed_raw}
+    else
+        log_success "All system and user services are healthy."
+    fi
+
+    local pacfiles_raw
+    pacfiles_raw=$(find /etc -type f \( -name "*.pacnew" -o -name "*.pacsave" \) 2>/dev/null)
+    if [[ -n "$pacfiles_raw" ]]; then
+        local pacfiles=( ${(f)pacfiles_raw} )
+        log_warn "Found ${#pacfiles[@]} config files requiring merge (run 'pacdiff'):"
+        printf '        %s\n' "${pacfiles[@]}"
+    else
+        log_success "No configuration merges required."
+    fi
+}
+
+function clean_broken_links() {
+    log_info "Searching for broken symlinks in $HOME..."
+
+    local broken=( $HOME/**/*~*/(.cache|.local/share/Steam|.wine|.cargo|node_modules)/*(-@N) )
+
+    if (( ${#broken[@]} > 0 )); then
+        log_warn "Found ${#broken[@]} broken symlinks:"
+        print -l -- "        "${^broken}
+
+        echo -n "[QUERY] Delete these broken links? (y/n): "
+        if read -q; then
+            echo
+            rm -f "${broken[@]}" && log_success "Links removed."
+        else
+            echo
+            log_info "Skipped removing broken links."
+        fi
+    else
+        log_success "No broken symlinks found."
+    fi
+}
+
+function update_mirrors() {
+    if ! command -v reflector &>/dev/null; then
+        log_warn "Reflector is not installed. Skipping mirror update."
+        return 0
+    fi
+
+    log_info "Updating Arch mirrors (Reflector)..."
+    if sudo reflector --country Romania,Germany --protocol https --latest 10 --sort rate --download-timeout 5 --save /etc/pacman.d/mirrorlist; then
+        log_success "Mirrors optimised."
+    else
+        log_error "Reflector failed to update mirrors. Keeping existing mirrorlist."
+    fi
+}
+
+function sync_system() {
+    if [[ -f /var/lib/pacman/db.lck ]]; then
+        log_error "Pacman database is locked. Is another update running?"
+        return 1
+    fi
+
+    log_info "Synchronising system packages..."
+
+    if [[ $EUID -eq 0 ]]; then
+        log_warn "Script is running as root. Skipping 'yay' and using 'pacman'."
+        pacman -Syu || { log_error "Pacman update failed or was canceled."; return 1; }
+    elif command -v yay &>/dev/null; then
+        yay -Syu || { log_error "Yay update failed or was canceled."; return 1; }
+    else
+        sudo pacman -Syu || { log_error "Pacman update failed or was canceled."; return 1; }
+    fi
+
+    if command -v flatpak &>/dev/null; then
+        log_info "Updating Flatpaks..."
+        flatpak update
+    fi
+
+    if command -v fwupdmgr &>/dev/null; then
+        log_info "Checking for firmware updates..."
+        sudo fwupdmgr refresh --force >/dev/null 2>&1
+
+        local fw_out
+        fw_out=$(fwupdmgr get-updates 2>&1)
+        local fw_status=$?
+
+        if (( fw_status == 0 )); then
+            log_warn "Firmware updates available for your hardware!"
+            echo -n "[QUERY] Apply firmware updates now? (y/n): "
+            if read -q; then
+                echo
+                sudo fwupdmgr update
+            else
+                echo
+            fi
+        elif [[ "$fw_out" == *"No updates available"* ]]; then
+            log_success "Firmware is up to date."
+        else
+            log_warn "Firmware status check returned an issue: ${fw_out[(f)1]}"
+        fi
+    fi
+
+    log_success "System updates complete."
+}
+
+function perform_cleanup() {
+    echo "--- Initiating Cleanup Phase ---"
+
+    local orphans=( $(pacman -Qdtq 2>/dev/null) )
+    if (( ${#orphans[@]} > 0 )); then
+        log_info "Found ${#orphans[@]} orphaned packages:"
+        print -c -- "${orphans[@]}"
+        echo -n "[QUERY] Remove these orphaned packages? (y/n): "
+        if read -q; then
+            echo
+            sudo pacman -Rns "${orphans[@]}"
+        else
+            echo
+            log_info "Skipped orphan package removal."
+        fi
+    else
+        log_success "No orphaned packages found."
+    fi
+
+    if command -v paccache &>/dev/null; then
+        log_info "Pruning pacman cache (keeping last 2 versions)..."
+        sudo paccache -rk2 >/dev/null
+        sudo paccache -ruk0 >/dev/null
+    else
+        log_warn "paccache not found (pacman-contrib missing). Skipping package cache pruning."
+    fi
+
+    log_info "Vacuuming systemd journal..."
+    sudo journalctl --vacuum-time=2weeks >/dev/null
+
+    log_info "Cleaning user cache directories..."
+    if [[ -d ~/.cache/thumbnails ]]; then
+        find ~/.cache/thumbnails -mindepth 1 -delete 2>/dev/null
+    fi
+    if [[ -d ~/.steam/steam/appcache/httpcache ]]; then
+        find ~/.steam/steam/appcache/httpcache -mindepth 1 -delete 2>/dev/null
+    fi
+
+    if command -v yay &>/dev/null; then
+        log_info "Cleaning AUR build cache..."
+        yay -Sc --noconfirm >/dev/null
+    fi
+
+    log_success "Cleanup complete."
+}
+
+function run_all() {
+    local start_root_space start_home_space
+    start_root_space=$(df / --output=avail | tail -1 | tr -d ' ')
+    start_home_space=$(df "$HOME" --output=avail | tail -1 | tr -d ' ')
+
+    check_system_health
+    clean_broken_links
+    update_mirrors
+    sync_system
+    perform_cleanup
+
+    local end_root_space end_home_space
+    end_root_space=$(df / --output=avail | tail -1 | tr -d ' ')
+    end_home_space=$(df "$HOME" --output=avail | tail -1 | tr -d ' ')
+
+    local freed_root=$(( (end_root_space - start_root_space) / 1024 ))
+    local freed_home=$(( (end_home_space - start_home_space) / 1024 ))
+    local total_freed=$(( freed_root + freed_home ))
+
+    echo "-----------------------------------------------------------"
+    if (( total_freed >= 0 )); then
+        log_success "Maintenance Finished. Reclaimed: ${total_freed} MB"
+    else
+        log_success "Maintenance Finished. Disk usage increased by: $(( -total_freed )) MB"
+    fi
+
+    if [[ ! -d "/usr/lib/modules/$(uname -r)" ]]; then
+        log_warn "Kernel update detected! A system reboot is recommended."
+    fi
+}
+
+check_deps
+
+if [[ "$1" == "--all" ]]; then
+    run_all
+    exit 0
+fi
+
+while true; do
+    echo "\n--- Arch Maintenance Utility ---"
+    echo "1) Health Check (Services/Config)"
+    echo "2) Update Mirrors & System"
+    echo "3) Perform Cleanup (Orphans/Cache/Journal)"
+    echo "4) Full Maintenance (Run All)"
+    echo "0) Exit"
+    echo -n "[QUERY] Select action: "
+    read -r choice
+    case $choice in
+        1) check_system_health; clean_broken_links ;;
+        2) update_mirrors; sync_system ;;
+        3) perform_cleanup ;;
+        4) run_all ;;
+        0) exit 0 ;;
+        *) log_error "Invalid selection." ;;
+    esac
+done
